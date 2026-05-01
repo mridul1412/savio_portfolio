@@ -904,6 +904,15 @@ body::before {
   box-shadow: 0 0 70px var(--accent-glow);
 }
 
+/* Buffering spinner overlay */
+.cinema-buffering {
+  position: absolute;
+  top: 50%; left: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 3;
+  display: flex; align-items: center; justify-content: center;
+}
+
 /* Controls bar */
 .cinema-controls {
   position: absolute;

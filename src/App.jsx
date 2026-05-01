@@ -81,20 +81,22 @@ function Cursor() {
 
 /* ─── Custom Video Player ─── */
 function CinematicPlayer({ src, poster }) {
-  const videoRef    = useRef(null);
-  const progressRef = useRef(null);
-  const wrapRef     = useRef(null);
-  const hideTimer   = useRef(null);
+  const videoRef       = useRef(null);
+  const progressRef    = useRef(null);
+  const wrapRef        = useRef(null);
+  const hideTimer      = useRef(null);
+  const wantsToPlayRef = useRef(false);
 
-  const [playing, setPlaying]     = useState(false);
-  const [muted, setMuted]         = useState(false);
-  const [progress, setProgress]   = useState(0);
-  const [buffered, setBuffered]   = useState(0);
-  const [duration, setDuration]   = useState(0);
-  const [current, setCurrent]     = useState(0);
+  const [playing, setPlaying]       = useState(false);
+  const [muted, setMuted]           = useState(false);
+  const [progress, setProgress]     = useState(0);
+  const [buffered, setBuffered]     = useState(0);
+  const [duration, setDuration]     = useState(0);
+  const [current, setCurrent]       = useState(0);
   const [fullscreen, setFullscreen] = useState(false);
-  const [showUI, setShowUI]       = useState(true);
-  const [loaded, setLoaded]       = useState(false);
+  const [showUI, setShowUI]         = useState(true);
+  const [loaded, setLoaded]         = useState(false);
+  const [isBuffering, setIsBuffering] = useState(false);
 
   const fmt = (s) => {
     if (!s || isNaN(s)) return '0:00';
@@ -106,47 +108,158 @@ function CinematicPlayer({ src, poster }) {
   const resetHideTimer = useCallback(() => {
     setShowUI(true);
     clearTimeout(hideTimer.current);
-    if (playing) {
+    if (playing && !isBuffering) {
       hideTimer.current = setTimeout(() => setShowUI(false), 2500);
     }
-  }, [playing]);
+  }, [playing, isBuffering]);
 
   useEffect(() => {
     resetHideTimer();
     return () => clearTimeout(hideTimer.current);
-  }, [playing, resetHideTimer]);
+  }, [playing, isBuffering, resetHideTimer]);
+
+  const checkBufferAndPlay = useCallback(() => {
+    const v = videoRef.current;
+    if (!v || !wantsToPlayRef.current) return;
+
+    let bufferedEnd = 0;
+    if (v.buffered.length > 0) {
+      bufferedEnd = v.buffered.end(v.buffered.length - 1);
+    }
+
+    const bufferAhead = bufferedEnd - v.currentTime;
+    const isAlmostFinished = (v.duration - v.currentTime) < 2;
+    // We want at least 10 seconds of buffer ahead, or 25% of the total video, or if we are near the end, or readyState 4.
+    const hasEnoughBuffer = 
+      v.readyState === 4 || 
+      bufferAhead >= 10 || 
+      (v.duration > 0 && bufferAhead >= v.duration * 0.25) || 
+      isAlmostFinished;
+
+    if (hasEnoughBuffer && v.paused) {
+      const p = v.play();
+      if (p !== undefined) {
+        p.then(() => {
+          setPlaying(true);
+          setIsBuffering(false);
+        }).catch(() => {});
+      } else {
+        setPlaying(true);
+        setIsBuffering(false);
+      }
+    }
+  }, []);
 
   useEffect(() => {
     const v = videoRef.current;
     if (!v) return;
+
     const onTime = () => {
       setProgress((v.currentTime / v.duration) * 100);
       setCurrent(v.currentTime);
+
+      // Check if we are running low on buffer while playing
+      if (!v.paused && wantsToPlayRef.current) {
+         let bufferedEnd = 0;
+         if (v.buffered.length > 0) bufferedEnd = v.buffered.end(v.buffered.length - 1);
+         const bufferAhead = bufferedEnd - v.currentTime;
+         // If we have less than 1 second of buffer and aren't near the end, proactively pause and wait for buffer
+         if (bufferAhead < 1 && v.readyState < 4 && (v.duration - v.currentTime) > 2) {
+           setIsBuffering(true);
+           v.pause();
+         }
+      }
     };
+
     const onDur = () => { setDuration(v.duration); setLoaded(true); };
+    
     const onBuf = () => {
       if (v.buffered.length > 0) {
         setBuffered((v.buffered.end(v.buffered.length - 1) / v.duration) * 100);
       }
+      checkBufferAndPlay();
     };
-    const onEnd = () => setPlaying(false);
+
+    const onEnd = () => {
+      setPlaying(false);
+      wantsToPlayRef.current = false;
+      setIsBuffering(false);
+    };
+
+    const onWaiting = () => {
+      if (wantsToPlayRef.current) {
+        setIsBuffering(true);
+        v.pause(); // explicitly pause so we accumulate a robust buffer chunk instead of stuttering rapidly
+      }
+    };
+    
+    const onPlaying = () => {
+      setIsBuffering(false);
+      setPlaying(true);
+    };
+    
+    const onCanPlayThrough = () => {
+      checkBufferAndPlay();
+    };
+
     v.addEventListener('timeupdate', onTime);
     v.addEventListener('loadedmetadata', onDur);
     v.addEventListener('progress', onBuf);
     v.addEventListener('ended', onEnd);
+    v.addEventListener('waiting', onWaiting);
+    v.addEventListener('playing', onPlaying);
+    v.addEventListener('canplaythrough', onCanPlayThrough);
+
     return () => {
       v.removeEventListener('timeupdate', onTime);
       v.removeEventListener('loadedmetadata', onDur);
       v.removeEventListener('progress', onBuf);
       v.removeEventListener('ended', onEnd);
+      v.removeEventListener('waiting', onWaiting);
+      v.removeEventListener('playing', onPlaying);
+      v.removeEventListener('canplaythrough', onCanPlayThrough);
     };
-  }, [src]);
+  }, [src, checkBufferAndPlay]);
 
   const toggle = () => {
     const v = videoRef.current;
     if (!v) return;
-    if (v.paused) { v.play(); setPlaying(true); }
-    else { v.pause(); setPlaying(false); }
+
+    if (v.paused) { 
+      wantsToPlayRef.current = true;
+      setIsBuffering(true);
+      
+      // Kickstart loading / playback
+      const p = v.play();
+      if (p !== undefined) {
+        p.then(() => {
+          let bufferedEnd = 0;
+          if (v.buffered.length > 0) bufferedEnd = v.buffered.end(v.buffered.length - 1);
+          const bufferAhead = bufferedEnd - v.currentTime;
+          const isAlmostFinished = (v.duration - v.currentTime) < 2;
+          const hasEnoughBuffer = 
+            v.readyState === 4 || 
+            bufferAhead >= 10 || 
+            (v.duration > 0 && bufferAhead >= v.duration * 0.25) ||
+            isAlmostFinished;
+          
+          if (!hasEnoughBuffer) {
+             v.pause();
+          } else {
+             setIsBuffering(false);
+             setPlaying(true);
+          }
+        }).catch(() => {
+          wantsToPlayRef.current = false;
+          setIsBuffering(false);
+        });
+      }
+    } else { 
+      wantsToPlayRef.current = false;
+      v.pause(); 
+      setPlaying(false); 
+      setIsBuffering(false);
+    }
   };
 
   const seek = (e) => {
@@ -156,6 +269,12 @@ function CinematicPlayer({ src, poster }) {
     const rect = bar.getBoundingClientRect();
     const pct  = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
     v.currentTime = pct * v.duration;
+    
+    // When seeking, check if we need to buffer
+    if (wantsToPlayRef.current) {
+      setIsBuffering(true);
+      checkBufferAndPlay();
+    }
   };
 
   const toggleFS = () => {
@@ -205,8 +324,15 @@ function CinematicPlayer({ src, poster }) {
         style={{ opacity: loaded ? 1 : 0 }}
       />
 
+      {/* Buffering Spinner */}
+      {isBuffering && loaded && (
+        <div className="cinema-buffering" onClick={toggle}>
+          <div className="loader-ring" style={{ width: 50, height: 50, borderWidth: 3 }} />
+        </div>
+      )}
+
       {/* Big center play button */}
-      {loaded && !playing && (
+      {loaded && !wantsToPlayRef.current && !playing && !isBuffering && (
         <div className="cinema-big-play" onClick={toggle}>
           <Play size={40} color="#000" fill="#000" />
         </div>
@@ -224,8 +350,8 @@ function CinematicPlayer({ src, poster }) {
 
         <div className="cinema-controls-row">
           <div className="cinema-controls-left">
-            <button className="cinema-btn" onClick={toggle} aria-label={playing ? 'Pause' : 'Play'}>
-              {playing ? <Pause size={18} /> : <Play size={18} />}
+            <button className="cinema-btn" onClick={toggle} aria-label={wantsToPlayRef.current ? 'Pause' : 'Play'}>
+              {wantsToPlayRef.current ? <Pause size={18} /> : <Play size={18} />}
             </button>
 
             <button className="cinema-btn" onClick={() => setMuted(!muted)} aria-label="Toggle mute">
@@ -261,6 +387,8 @@ export default function App() {
     works.filter(f => f.mimeType.startsWith('image/') || f.mimeType.startsWith('video/')),
     [works]
   );
+
+  /* Video pre-buffering removed to prevent excessive bandwidth and API rate limits on page load */
 
   /* fetch drive files */
   useEffect(() => {
