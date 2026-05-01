@@ -80,12 +80,13 @@ function Cursor() {
 }
 
 /* ─── Custom Video Player ─── */
-function CinematicPlayer({ src, poster }) {
+function CinematicPlayer({ src, poster, onPlayingChange }) {
   const videoRef       = useRef(null);
   const progressRef    = useRef(null);
   const wrapRef        = useRef(null);
   const hideTimer      = useRef(null);
   const wantsToPlayRef = useRef(false);
+  const [hasStarted, setHasStarted] = useState(false);
 
   const [playing, setPlaying]       = useState(false);
   const [muted, setMuted]           = useState(false);
@@ -118,37 +119,11 @@ function CinematicPlayer({ src, poster }) {
     return () => clearTimeout(hideTimer.current);
   }, [playing, isBuffering, resetHideTimer]);
 
-  const checkBufferAndPlay = useCallback(() => {
-    const v = videoRef.current;
-    if (!v || !wantsToPlayRef.current) return;
+  useEffect(() => {
+    if (onPlayingChange) onPlayingChange(playing);
+  }, [playing, onPlayingChange]);
 
-    let bufferedEnd = 0;
-    if (v.buffered.length > 0) {
-      bufferedEnd = v.buffered.end(v.buffered.length - 1);
-    }
 
-    const bufferAhead = bufferedEnd - v.currentTime;
-    const isAlmostFinished = (v.duration - v.currentTime) < 2;
-    // We want at least 10 seconds of buffer ahead, or 25% of the total video, or if we are near the end, or readyState 4.
-    const hasEnoughBuffer = 
-      v.readyState === 4 || 
-      bufferAhead >= 10 || 
-      (v.duration > 0 && bufferAhead >= v.duration * 0.25) || 
-      isAlmostFinished;
-
-    if (hasEnoughBuffer && v.paused) {
-      const p = v.play();
-      if (p !== undefined) {
-        p.then(() => {
-          setPlaying(true);
-          setIsBuffering(false);
-        }).catch(() => {});
-      } else {
-        setPlaying(true);
-        setIsBuffering(false);
-      }
-    }
-  }, []);
 
   useEffect(() => {
     const v = videoRef.current;
@@ -157,18 +132,6 @@ function CinematicPlayer({ src, poster }) {
     const onTime = () => {
       setProgress((v.currentTime / v.duration) * 100);
       setCurrent(v.currentTime);
-
-      // Check if we are running low on buffer while playing
-      if (!v.paused && wantsToPlayRef.current) {
-         let bufferedEnd = 0;
-         if (v.buffered.length > 0) bufferedEnd = v.buffered.end(v.buffered.length - 1);
-         const bufferAhead = bufferedEnd - v.currentTime;
-         // If we have less than 1 second of buffer and aren't near the end, proactively pause and wait for buffer
-         if (bufferAhead < 1 && v.readyState < 4 && (v.duration - v.currentTime) > 2) {
-           setIsBuffering(true);
-           v.pause();
-         }
-      }
     };
 
     const onDur = () => { setDuration(v.duration); setLoaded(true); };
@@ -177,7 +140,6 @@ function CinematicPlayer({ src, poster }) {
       if (v.buffered.length > 0) {
         setBuffered((v.buffered.end(v.buffered.length - 1) / v.duration) * 100);
       }
-      checkBufferAndPlay();
     };
 
     const onEnd = () => {
@@ -189,17 +151,12 @@ function CinematicPlayer({ src, poster }) {
     const onWaiting = () => {
       if (wantsToPlayRef.current) {
         setIsBuffering(true);
-        v.pause(); // explicitly pause so we accumulate a robust buffer chunk instead of stuttering rapidly
       }
     };
     
     const onPlaying = () => {
       setIsBuffering(false);
       setPlaying(true);
-    };
-    
-    const onCanPlayThrough = () => {
-      checkBufferAndPlay();
     };
 
     v.addEventListener('timeupdate', onTime);
@@ -208,7 +165,6 @@ function CinematicPlayer({ src, poster }) {
     v.addEventListener('ended', onEnd);
     v.addEventListener('waiting', onWaiting);
     v.addEventListener('playing', onPlaying);
-    v.addEventListener('canplaythrough', onCanPlayThrough);
 
     return () => {
       v.removeEventListener('timeupdate', onTime);
@@ -217,47 +173,24 @@ function CinematicPlayer({ src, poster }) {
       v.removeEventListener('ended', onEnd);
       v.removeEventListener('waiting', onWaiting);
       v.removeEventListener('playing', onPlaying);
-      v.removeEventListener('canplaythrough', onCanPlayThrough);
     };
-  }, [src, checkBufferAndPlay]);
+  }, [src]);
 
   const toggle = () => {
     const v = videoRef.current;
     if (!v) return;
 
-    if (v.paused) { 
+    if (v.paused) {
+      setHasStarted(true);
       wantsToPlayRef.current = true;
-      setIsBuffering(true);
-      
-      // Kickstart loading / playback
-      const p = v.play();
-      if (p !== undefined) {
-        p.then(() => {
-          let bufferedEnd = 0;
-          if (v.buffered.length > 0) bufferedEnd = v.buffered.end(v.buffered.length - 1);
-          const bufferAhead = bufferedEnd - v.currentTime;
-          const isAlmostFinished = (v.duration - v.currentTime) < 2;
-          const hasEnoughBuffer = 
-            v.readyState === 4 || 
-            bufferAhead >= 10 || 
-            (v.duration > 0 && bufferAhead >= v.duration * 0.25) ||
-            isAlmostFinished;
-          
-          if (!hasEnoughBuffer) {
-             v.pause();
-          } else {
-             setIsBuffering(false);
-             setPlaying(true);
-          }
-        }).catch(() => {
-          wantsToPlayRef.current = false;
-          setIsBuffering(false);
-        });
-      }
-    } else { 
+      v.play().catch(() => {
+        wantsToPlayRef.current = false;
+        setHasStarted(false);
+      });
+    } else {
       wantsToPlayRef.current = false;
-      v.pause(); 
-      setPlaying(false); 
+      v.pause();
+      setPlaying(false);
       setIsBuffering(false);
     }
   };
@@ -270,29 +203,43 @@ function CinematicPlayer({ src, poster }) {
     const pct  = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
     v.currentTime = pct * v.duration;
     
-    // When seeking, check if we need to buffer
     if (wantsToPlayRef.current) {
       setIsBuffering(true);
-      checkBufferAndPlay();
     }
   };
 
   const toggleFS = () => {
     const el = wrapRef.current;
     if (!el) return;
-    if (!document.fullscreenElement) {
-      el.requestFullscreen?.();
+    if (!document.fullscreenElement && !document.webkitFullscreenElement) {
+      if (el.requestFullscreen) {
+        el.requestFullscreen();
+      } else if (el.webkitRequestFullscreen) {
+        el.webkitRequestFullscreen();
+      } else if (el.msRequestFullscreen) {
+        el.msRequestFullscreen();
+      }
       setFullscreen(true);
     } else {
-      document.exitFullscreen?.();
+      if (document.exitFullscreen) {
+        document.exitFullscreen();
+      } else if (document.webkitExitFullscreen) {
+        document.webkitExitFullscreen();
+      } else if (document.msExitFullscreen) {
+        document.msExitFullscreen();
+      }
       setFullscreen(false);
     }
   };
 
   useEffect(() => {
-    const onFSChange = () => setFullscreen(!!document.fullscreenElement);
+    const onFSChange = () => setFullscreen(!!(document.fullscreenElement || document.webkitFullscreenElement));
     document.addEventListener('fullscreenchange', onFSChange);
-    return () => document.removeEventListener('fullscreenchange', onFSChange);
+    document.addEventListener('webkitfullscreenchange', onFSChange);
+    return () => {
+      document.removeEventListener('fullscreenchange', onFSChange);
+      document.removeEventListener('webkitfullscreenchange', onFSChange);
+    };
   }, []);
 
   return (
@@ -302,13 +249,20 @@ function CinematicPlayer({ src, poster }) {
       onMouseMove={resetHideTimer}
       onClick={(e) => e.stopPropagation()}
     >
-      {/* Poster / loading state */}
-      {!loaded && poster && (
-        <div className="cinema-poster">
-          <img src={poster} alt="" referrerPolicy="no-referrer" />
-          <div className="cinema-poster-play" onClick={toggle}>
-            <Play size={32} color="#000" fill="#000" />
-          </div>
+      {/* Poster shown until playback starts */}
+      {!hasStarted && (
+        <div className="cinema-poster" style={{ zIndex: 3 }}>
+          {poster && <img src={poster} alt="" referrerPolicy="no-referrer" />}
+          {!isBuffering && (
+            <div className="cinema-poster-play" onClick={toggle}>
+              <Play size={32} color="#000" fill="#000" />
+            </div>
+          )}
+          {isBuffering && (
+            <div className="cinema-poster-play" style={{ background: 'transparent', boxShadow: 'none', animation: 'none' }}>
+              <div className="loader-ring" style={{ width: 44, height: 44, borderWidth: 3 }} />
+            </div>
+          )}
         </div>
       )}
 
@@ -318,21 +272,20 @@ function CinematicPlayer({ src, poster }) {
         className="cinema-video"
         muted={muted}
         playsInline
-        preload="auto"
-        poster={poster}
+        preload="metadata"
         onClick={toggle}
-        style={{ opacity: loaded ? 1 : 0 }}
+        style={{ opacity: hasStarted ? 1 : 0 }}
       />
 
-      {/* Buffering Spinner */}
-      {isBuffering && loaded && (
+      {/* Buffering Spinner (while playing) */}
+      {isBuffering && hasStarted && (
         <div className="cinema-buffering" onClick={toggle}>
           <div className="loader-ring" style={{ width: 50, height: 50, borderWidth: 3 }} />
         </div>
       )}
 
-      {/* Big center play button */}
-      {loaded && !wantsToPlayRef.current && !playing && !isBuffering && (
+      {/* Pause overlay — big play button shown when paused after having started */}
+      {hasStarted && !playing && !isBuffering && (
         <div className="cinema-big-play" onClick={toggle}>
           <Play size={40} color="#000" fill="#000" />
         </div>
@@ -350,8 +303,8 @@ function CinematicPlayer({ src, poster }) {
 
         <div className="cinema-controls-row">
           <div className="cinema-controls-left">
-            <button className="cinema-btn" onClick={toggle} aria-label={wantsToPlayRef.current ? 'Pause' : 'Play'}>
-              {wantsToPlayRef.current ? <Pause size={18} /> : <Play size={18} />}
+            <button className="cinema-btn" onClick={toggle} aria-label={playing ? 'Pause' : 'Play'}>
+              {playing ? <Pause size={18} /> : <Play size={18} />}
             </button>
 
             <button className="cinema-btn" onClick={() => setMuted(!muted)} aria-label="Toggle mute">
@@ -378,6 +331,7 @@ export default function App() {
   const [loading,     setLoading]     = useState(true);
   const [activeIndex, setActiveIndex] = useState(-1);  // -1 = closed
   const [navScrolled, setNavScrolled] = useState(false);
+  const [isVideoPlaying, setIsVideoPlaying] = useState(false);
 
   const { scrollY } = useScroll();
   useMotionValueEvent(scrollY, 'change', (v) => setNavScrolled(v > 60));
@@ -427,10 +381,17 @@ export default function App() {
   const openByFile = useCallback((file) => {
     const idx = mediaList.findIndex(f => f.id === file.id);
     if (idx !== -1) setActiveIndex(idx);
+    setIsVideoPlaying(false);
   }, [mediaList]);
 
-  const goPrev = () => setActiveIndex(i => Math.max(i - 1, 0));
-  const goNext = () => setActiveIndex(i => Math.min(i + 1, mediaList.length - 1));
+  const goPrev = () => {
+    setActiveIndex(i => Math.max(i - 1, 0));
+    setIsVideoPlaying(false);
+  };
+  const goNext = () => {
+    setActiveIndex(i => Math.min(i + 1, mediaList.length - 1));
+    setIsVideoPlaying(false);
+  };
 
   /* Derive current media data from index */
   const activeFile = isOpen ? mediaList[activeIndex] : null;
@@ -771,12 +732,15 @@ export default function App() {
       <AnimatePresence>
         {activeMedia && (
           <motion.div
-            className="gallery-overlay"
+            className={`gallery-overlay ${isVideoPlaying ? 'is-playing' : ''}`}
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
             transition={{ duration: 0.3 }}
-            onClick={() => setActiveIndex(-1)}
+            onClick={() => {
+              setActiveIndex(-1);
+              setIsVideoPlaying(false);
+            }}
             role="dialog"
             aria-modal="true"
             aria-label={activeMedia.title}
@@ -789,7 +753,10 @@ export default function App() {
               </div>
               <div className="gallery-topbar-actions">
                 <span className="gallery-counter">{activeIndex + 1} / {mediaList.length}</span>
-                <button className="gallery-btn" onClick={() => setActiveIndex(-1)} aria-label="Close">
+                <button className="gallery-btn" onClick={() => {
+                  setActiveIndex(-1);
+                  setIsVideoPlaying(false);
+                }} aria-label="Close">
                   <X size={20} />
                 </button>
               </div>
@@ -840,6 +807,7 @@ export default function App() {
                   <CinematicPlayer
                     src={activeMedia.src}
                     poster={activeMedia.thumb}
+                    onPlayingChange={setIsVideoPlaying}
                   />
                 )}
               </motion.div>

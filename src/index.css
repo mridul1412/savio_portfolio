@@ -688,6 +688,14 @@ body::before {
   flex-direction: column;
 }
 
+/* Hide UI elements when playing */
+.gallery-overlay.is-playing .gallery-topbar,
+.gallery-overlay.is-playing .gallery-arrow,
+.gallery-overlay.is-playing .gallery-filmstrip {
+  opacity: 0 !important;
+  pointer-events: none !important;
+}
+
 /* ── Top bar ── */
 .gallery-topbar {
   position: absolute;
@@ -797,6 +805,11 @@ body::before {
   background: linear-gradient(to top, rgba(0,0,0,0.65), transparent);
   z-index: 10002;
   scrollbar-width: none;
+  opacity: 0;
+  transition: opacity 0.4s ease;
+}
+.gallery-filmstrip:hover {
+  opacity: 1;
 }
 .gallery-filmstrip::-webkit-scrollbar { display: none; }
 
@@ -846,6 +859,21 @@ body::before {
   box-shadow: 0 8px 60px rgba(0,0,0,0.7), 0 0 40px var(--accent-glow-2);
   cursor: pointer;
   user-select: none;
+}
+
+.cinema-player:-webkit-full-screen {
+  max-width: 100% !important;
+  width: 100% !important;
+  height: 100% !important;
+  border-radius: 0;
+  aspect-ratio: auto;
+}
+.cinema-player:fullscreen {
+  max-width: 100% !important;
+  width: 100% !important;
+  height: 100% !important;
+  border-radius: 0;
+  aspect-ratio: auto;
 }
 
 .cinema-video {
